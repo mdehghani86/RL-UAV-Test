@@ -1,0 +1,22 @@
+{
+  "exp": "ma_scaling",
+  "policy": "ia3c",
+  "kind": "marl",
+  "N": 30,
+  "K": 2,
+  "seed": 0,
+  "iters": 3,
+  "episodes": 30,
+  "mean_return": 457.10875341891426,
+  "std_return": 80.65813446845482,
+  "min_return": 323.9892387201381,
+  "max_return": 668.3976867575702,
+  "mean_customers_served": 17.2,
+  "service_rate": 0.5733333333142222,
+  "success_rate": 0.0,
+  "mean_makespan": 62.87773501078288,
+  "mean_team_distance": 1611.534238688151,
+  "mean_team_tardiness": 200.00439376831054,
+  "mean_team_infeasible": 2.2666666666666666,
+  "wall_seconds": 36.015931129455566
+}

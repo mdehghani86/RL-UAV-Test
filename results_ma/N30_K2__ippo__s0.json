@@ -1,0 +1,22 @@
+{
+  "exp": "ma_scaling",
+  "policy": "ippo",
+  "kind": "marl",
+  "N": 30,
+  "K": 2,
+  "seed": 0,
+  "iters": 3,
+  "episodes": 30,
+  "mean_return": 455.2225795238511,
+  "std_return": 89.83543202230213,
+  "min_return": 318.58162659303747,
+  "max_return": 617.8132465934116,
+  "mean_customers_served": 16.933333333333334,
+  "service_rate": 0.5644444444256297,
+  "success_rate": 0.0,
+  "mean_makespan": 63.07741877237956,
+  "mean_team_distance": 1614.4697306315104,
+  "mean_team_tardiness": 185.35418593088787,
+  "mean_team_infeasible": 1.9333333333333333,
+  "wall_seconds": 46.313308000564575
+}

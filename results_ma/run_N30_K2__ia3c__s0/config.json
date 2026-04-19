@@ -1,0 +1,7 @@
+{
+  "exp": "ma_scaling",
+  "algo": "ia3c",
+  "N": 30,
+  "K": 2,
+  "seed": 0
+}

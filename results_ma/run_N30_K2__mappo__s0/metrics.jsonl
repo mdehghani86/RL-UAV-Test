@@ -1,0 +1,3 @@
+{"ts": 13.47709321975708, "iter": 0, "rollout_mean_return": 318.5293314471427, "ent_coef": 0.1, "mean_served": 23.43548387096774}
+{"ts": 26.374361276626587, "iter": 1, "rollout_mean_return": 324.2181451831657, "ent_coef": 0.055, "mean_served": 24.08130081300813}
+{"ts": 39.60407471656799, "iter": 2, "rollout_mean_return": 326.20040447974276, "ent_coef": 0.009999999999999995, "mean_served": 24.204918032786885}

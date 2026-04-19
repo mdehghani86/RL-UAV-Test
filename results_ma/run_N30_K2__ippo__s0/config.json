@@ -1,0 +1,7 @@
+{
+  "exp": "ma_scaling",
+  "algo": "ippo",
+  "N": 30,
+  "K": 2,
+  "seed": 0
+}

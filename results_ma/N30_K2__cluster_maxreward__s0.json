@@ -1,0 +1,21 @@
+{
+  "exp": "ma_scaling",
+  "policy": "cluster_maxreward",
+  "kind": "heuristic",
+  "N": 30,
+  "K": 2,
+  "seed": 0,
+  "episodes": 30,
+  "mean_return": 971.0411562088858,
+  "std_return": 1.1823050037772773,
+  "min_return": 967.0802671814732,
+  "max_return": 972.8874777272908,
+  "mean_customers_served": 30.0,
+  "service_rate": 0.9999999999666667,
+  "success_rate": 1.0,
+  "mean_makespan": 22.669410514831544,
+  "mean_team_distance": 601.1148935953776,
+  "mean_team_tardiness": 3.0668094952901206,
+  "mean_team_infeasible": 0.0,
+  "wall_seconds": 0.7465634346008301
+}

@@ -1,0 +1,22 @@
+{
+  "exp": "ma_scaling",
+  "policy": "mappo",
+  "kind": "marl",
+  "N": 30,
+  "K": 2,
+  "seed": 0,
+  "iters": 3,
+  "episodes": 30,
+  "mean_return": 659.0222434952713,
+  "std_return": 74.98372163059125,
+  "min_return": 518.0790481849275,
+  "max_return": 798.0154147552347,
+  "mean_customers_served": 23.866666666666667,
+  "service_rate": 0.795555555529037,
+  "success_rate": 0.0,
+  "mean_makespan": 53.8094170888265,
+  "mean_team_distance": 1410.724208577474,
+  "mean_team_tardiness": 180.88248068491617,
+  "mean_team_infeasible": 2.6333333333333333,
+  "wall_seconds": 41.99013900756836
+}
