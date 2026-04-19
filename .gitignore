@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Training artefacts (large, regenerable)
+results/
+results_prefix/
+report.html
+*.pt
+*.pth
+*.ckpt
+*.npz
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs / tmp
+*.log
+/tmp/
+.tmp/
+
+# Dropbox conflicts
+* (conflicted *).py
+* (conflicted *).json
+
+# Akshat's upstream reference repo (nested git) — we're pushing to a separate
+# branch of it, not embedding it as a submodule
+RL-UAV-Test/

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RL-UAV Lab</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='12' fill='%2306b6d4' opacity='0.25'/%3E%3Cpath d='M8 20 L16 12 L16 16 L24 16 L24 12 L32 20 L24 28 L24 24 L16 24 L16 28 Z' fill='%2306b6d4'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <div class="nav-pill">
+    <div class="nav-logo">
+      <svg width="22" height="22" viewBox="0 0 40 40">
+        <circle cx="20" cy="20" r="12" fill="#06b6d4" opacity="0.25"/>
+        <path d="M8 20 L16 12 L16 16 L24 16 L24 12 L32 20 L24 28 L24 24 L16 24 L16 28 Z" fill="#06b6d4"/>
+      </svg>
+      <span>RL-UAV <em>Lab</em></span>
+    </div>
+    <div class="nav-stats">
+      <span class="chip" id="chip-cores">cores –</span>
+      <span class="chip" id="chip-scheduled">scheduled 0</span>
+      <span class="chip chip-active" id="chip-done">done 0</span>
+      <span class="chip chip-fail" id="chip-failed">failed 0</span>
+      <span class="chip" id="chip-status">idle</span>
+    </div>
+  </div>
+
+  <main class="grid">
+    <!-- ─────── LEFT: RUN CONFIG ─────── -->
+    <section class="panel panel-left">
+      <h2>Launch experiment</h2>
+      <p class="muted">Pick reward × algorithm × seeds. Runs execute in parallel.</p>
+
+      <label class="lbl">Reward shape</label>
+      <div class="chipset" id="rewards"></div>
+
+      <label class="lbl">Algorithm</label>
+      <div class="chipset" id="algos"></div>
+
+      <label class="lbl">Seeds</label>
+      <input id="seeds" class="input" value="0,1,2" placeholder="0,1,2">
+
+      <label class="lbl">Workers <span id="workers-val" class="muted small"></span></label>
+      <input id="workers" class="input slider" type="range" min="1" max="12" value="8">
+
+      <button class="cta" id="btn-start">
+        <span class="cta-circle"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
+        Launch
+      </button>
+      <button class="ghost" id="btn-stop">Stop running</button>
+
+      <div class="divider"></div>
+
+      <h3>Hyperparameter quick-tune</h3>
+      <div class="row">
+        <label class="lbl-small">Iters <input class="input-small" id="ov-iters" type="number" placeholder="auto"></label>
+        <label class="lbl-small">Steps/iter <input class="input-small" id="ov-steps" type="number" placeholder="auto"></label>
+      </div>
+      <div class="row">
+        <label class="lbl-small">Hidden dim <input class="input-small" id="ov-hidden" type="number" placeholder="128"></label>
+        <label class="lbl-small">LR <input class="input-small" id="ov-lr" type="number" step="0.0001" placeholder="3e-4"></label>
+      </div>
+      <p class="muted small">(Overrides not wired yet — configs.py is the source of truth.)</p>
+    </section>
+
+    <!-- ─────── CENTER: LIVE CHARTS + DETAIL ─────── -->
+    <section class="panel panel-center">
+      <div class="center-head">
+        <div>
+          <h2 id="detail-title">Select a run</h2>
+          <p class="muted small" id="detail-sub">Click any item in the run list →</p>
+        </div>
+        <div id="detail-badges"></div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <div class="chart-head"><span class="chart-title">Rollout return</span><span class="chart-val" id="v-return">–</span></div>
+          <canvas id="c-return"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-head"><span class="chart-title">Greedy eval return</span><span class="chart-val" id="v-eval">–</span></div>
+          <canvas id="c-eval"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-head"><span class="chart-title">Success rate</span><span class="chart-val" id="v-success">–</span></div>
+          <canvas id="c-success"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-head"><span class="chart-title">Customers served / 5</span><span class="chart-val" id="v-served">–</span></div>
+          <canvas id="c-served"></canvas>
+        </div>
+      </div>
+
+      <div class="heatmap-wrap">
+        <div class="chart-head">
+          <span class="chart-title">Final success-rate — reward × algo</span>
+          <span class="chart-val" id="heat-best">–</span>
+        </div>
+        <div id="heatmap"></div>
+      </div>
+    </section>
+
+    <!-- ─────── RIGHT: RUN LIST ─────── -->
+    <section class="panel panel-right">
+      <div class="runs-head">
+        <h2>Runs</h2>
+        <button class="ghost-small" id="btn-refresh">↻</button>
+      </div>
+      <div class="filter-row">
+        <input id="filter-runs" class="input-small" placeholder="filter…">
+        <select id="sort-runs" class="input-small">
+          <option value="new">newest</option>
+          <option value="return">by return</option>
+          <option value="success">by success</option>
+        </select>
+      </div>
+      <div id="run-list" class="run-list"></div>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>
