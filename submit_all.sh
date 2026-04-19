@@ -18,9 +18,9 @@ LOGDIR=$REPO/logs
 mkdir -p "$LOGDIR"
 
 # Priority-ordered GPU types — SLURM tries each; first matching node gets the job.
-# A100 > A6000 > A5000 > L40s > any gpu.
-# We submit the same script; SLURM does the matching via --gres.
-GPU_PREF='gpu:a100:1'   # override per-job below if needed
+# A100 > H200 > V100 > any gpu.
+# Leave as plain gpu:1 so SLURM grabs whatever is free fastest — shortest queue wait.
+GPU_PREF='gpu:1'
 
 declare -a JOB_IDS
 for E in 1 2 3 4 5; do
@@ -35,7 +35,7 @@ for E in 1 2 3 4 5; do
     cat > "$SCRIPT" <<EOF
 #!/bin/bash
 #SBATCH --job-name=${NAME}
-#SBATCH --partition=sharing
+#SBATCH --partition=gpu
 #SBATCH --gres=${GPU_PREF}
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
