@@ -53,21 +53,51 @@ def _key_padding_mask_from_mask(mask: torch.Tensor) -> torch.Tensor:
     return ~mask
 
 
-class AttentionActor(nn.Module):
-    """Cross-attention scorer: q_context · K_nodes → logit per node.
+class _NodeEncoderLayer(nn.Module):
+    """One transformer encoder layer (pre-norm, Kool 2019-style): self-attention
+    over nodes + feed-forward, with residual connections and layer norms."""
+    def __init__(self, d_model: int, n_heads: int, ff_mult: int = 4):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, ff_mult * d_model), nn.GELU(),
+            nn.Linear(ff_mult * d_model, d_model),
+        )
 
-    Uses a key_padding_mask so infeasible/padded nodes do NOT contribute to
-    the context-attention summary (c_att). Final logits are also masked by
-    the caller before sampling (see safe_mask_logits)."""
+    def forward(self, x: torch.Tensor, key_padding_mask: Optional[torch.Tensor] = None):
+        h = self.ln1(x)
+        a, _ = self.attn(h, h, h, key_padding_mask=key_padding_mask)
+        x = x + a
+        x = x + self.ff(self.ln2(x))
+        return x
+
+
+class AttentionActor(nn.Module):
+    """Transformer-encoder + cross-attention scorer (Kool 2019 AM style).
+
+    Pipeline:
+      1. Project node features to d_model.
+      2. Multi-layer self-attention encoder refines node representations.
+      3. Context query cross-attends to encoded nodes → c_att.
+      4. score = dot(K(node), Q(c_att)) / sqrt(d_model) → logit per node.
+
+    The `feas_mask` is passed as a key_padding_mask through ALL encoder layers
+    AND the cross-attention, so padded/infeasible nodes never pollute any
+    node's representation."""
 
     def __init__(self, node_feat_dim: int, context_dim: int, d_model: int = 128,
-                 n_heads: int = 4):
+                 n_heads: int = 4, n_encoder_layers: int = 3):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
         self.node_proj = nn.Linear(node_feat_dim, d_model)
         self.ctx_proj = nn.Linear(context_dim, d_model)
-        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.encoder = nn.ModuleList(
+            [_NodeEncoderLayer(d_model, n_heads) for _ in range(n_encoder_layers)]
+        )
+        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
         self.score_q = nn.Linear(d_model, d_model)
         self.score_k = nn.Linear(d_model, d_model)
         nn.init.xavier_uniform_(self.score_q.weight)
@@ -75,26 +105,24 @@ class AttentionActor(nn.Module):
 
     def forward(self, nodes: torch.Tensor, ctx: torch.Tensor,
                 feas_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        nodes: (B, pT, F_node)
-        ctx:   (B, F_ctx)
-        feas_mask: optional (B, pT) bool — True for feasible nodes; infeasible
-                   slots are ignored by the attention. If None, all nodes attend.
-        returns: logits (B, pT)
-        """
-        n = self.node_proj(nodes)
-        c = self.ctx_proj(ctx).unsqueeze(1)
         kpm = None
         if feas_mask is not None:
             kpm = _key_padding_mask_from_mask(feas_mask)
-            # Safety: if every slot is masked (impossible episode), drop the mask
-            # so attention still produces a finite output (caller will handle
-            # downstream); never call MHA with an all-True key-padding mask.
             all_pad = kpm.all(dim=-1)
             if all_pad.any():
                 kpm = kpm.clone()
                 kpm[all_pad] = False
-        c_att, _ = self.attn(c, n, n, key_padding_mask=kpm)
+
+        n = self.node_proj(nodes)
+        # Multi-layer self-attention encoder
+        for layer in self.encoder:
+            n = layer(n, key_padding_mask=kpm)
+
+        # Cross-attention: context → encoded nodes
+        c = self.ctx_proj(ctx).unsqueeze(1)
+        c_att, _ = self.cross_attn(c, n, n, key_padding_mask=kpm)
+
+        # Score each node against the context-attended query
         q = self.score_q(c_att)
         k = self.score_k(n)
         logits = torch.matmul(k, q.transpose(-1, -2)).squeeze(-1) / math.sqrt(self.d_model)
@@ -102,17 +130,20 @@ class AttentionActor(nn.Module):
 
 
 class AttentionCritic(nn.Module):
-    """Same encoder, MASKED mean-pool over nodes → MLP → V.
+    """Multi-layer encoder + MASKED mean-pool over nodes → MLP → V.
 
     The mean-pool respects the feasibility/real-slot mask so padded slots do
     NOT dilute the pooled node representation."""
 
     def __init__(self, node_feat_dim: int, context_dim: int, d_model: int = 128,
-                 n_heads: int = 4):
+                 n_heads: int = 4, n_encoder_layers: int = 3):
         super().__init__()
         self.node_proj = nn.Linear(node_feat_dim, d_model)
         self.ctx_proj = nn.Linear(context_dim, d_model)
-        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.encoder = nn.ModuleList(
+            [_NodeEncoderLayer(d_model, n_heads) for _ in range(n_encoder_layers)]
+        )
+        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
         self.head = nn.Sequential(
             nn.Linear(d_model * 2, d_model), nn.Tanh(),
             nn.Linear(d_model, 1),
@@ -120,8 +151,6 @@ class AttentionCritic(nn.Module):
 
     def forward(self, nodes: torch.Tensor, ctx: torch.Tensor,
                 feas_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        n = self.node_proj(nodes)
-        c = self.ctx_proj(ctx).unsqueeze(1)
         kpm = None
         if feas_mask is not None:
             kpm = _key_padding_mask_from_mask(feas_mask)
@@ -129,11 +158,15 @@ class AttentionCritic(nn.Module):
             if all_pad.any():
                 kpm = kpm.clone()
                 kpm[all_pad] = False
-        c_att, _ = self.attn(c, n, n, key_padding_mask=kpm)
 
-        # Masked mean-pool over nodes
+        n = self.node_proj(nodes)
+        for layer in self.encoder:
+            n = layer(n, key_padding_mask=kpm)
+        c = self.ctx_proj(ctx).unsqueeze(1)
+        c_att, _ = self.cross_attn(c, n, n, key_padding_mask=kpm)
+
         if feas_mask is not None:
-            m = feas_mask.unsqueeze(-1).float()  # (B, pT, 1)
+            m = feas_mask.unsqueeze(-1).float()
             summed = (n * m).sum(dim=1)
             denom = m.sum(dim=1).clamp(min=1.0)
             pooled = summed / denom
