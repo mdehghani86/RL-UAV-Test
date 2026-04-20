@@ -19,7 +19,7 @@ Pipeline:
 """
 from __future__ import annotations
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -45,8 +45,20 @@ def build_node_tokens(obs: dict, pad_N: int, pad_M: int) -> np.ndarray:
     return tokens
 
 
+def _key_padding_mask_from_mask(mask: torch.Tensor) -> torch.Tensor:
+    """Convert feasibility mask (True=feasible) to PyTorch MHA key_padding_mask
+    convention (True=IGNORE). Slots that are infeasible or padded are ignored
+    during cross-attention so their features don't pollute c_att.
+    mask shape: (B, pT).  Returns bool (B, pT) where True = pad/ignore."""
+    return ~mask
+
+
 class AttentionActor(nn.Module):
-    """Cross-attention scorer: q_context · K_nodes → logit per node."""
+    """Cross-attention scorer: q_context · K_nodes → logit per node.
+
+    Uses a key_padding_mask so infeasible/padded nodes do NOT contribute to
+    the context-attention summary (c_att). Final logits are also masked by
+    the caller before sampling (see safe_mask_logits)."""
 
     def __init__(self, node_feat_dim: int, context_dim: int, d_model: int = 128,
                  n_heads: int = 4):
@@ -56,32 +68,44 @@ class AttentionActor(nn.Module):
         self.node_proj = nn.Linear(node_feat_dim, d_model)
         self.ctx_proj = nn.Linear(context_dim, d_model)
         self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        # Final scoring: after attention, dot node representations with a learned
-        # query to get logits.
         self.score_q = nn.Linear(d_model, d_model)
         self.score_k = nn.Linear(d_model, d_model)
         nn.init.xavier_uniform_(self.score_q.weight)
         nn.init.xavier_uniform_(self.score_k.weight)
 
-    def forward(self, nodes: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+    def forward(self, nodes: torch.Tensor, ctx: torch.Tensor,
+                feas_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         nodes: (B, pT, F_node)
         ctx:   (B, F_ctx)
+        feas_mask: optional (B, pT) bool — True for feasible nodes; infeasible
+                   slots are ignored by the attention. If None, all nodes attend.
         returns: logits (B, pT)
         """
-        n = self.node_proj(nodes)            # (B, pT, d)
-        c = self.ctx_proj(ctx).unsqueeze(1)  # (B, 1, d)
-        # Context attends to nodes
-        c_att, _ = self.attn(c, n, n)        # (B, 1, d) — summary of nodes relevant to ctx
-        # Each node's logit = dot(node_k, score_q(c_att))
-        q = self.score_q(c_att)              # (B, 1, d)
-        k = self.score_k(n)                  # (B, pT, d)
+        n = self.node_proj(nodes)
+        c = self.ctx_proj(ctx).unsqueeze(1)
+        kpm = None
+        if feas_mask is not None:
+            kpm = _key_padding_mask_from_mask(feas_mask)
+            # Safety: if every slot is masked (impossible episode), drop the mask
+            # so attention still produces a finite output (caller will handle
+            # downstream); never call MHA with an all-True key-padding mask.
+            all_pad = kpm.all(dim=-1)
+            if all_pad.any():
+                kpm = kpm.clone()
+                kpm[all_pad] = False
+        c_att, _ = self.attn(c, n, n, key_padding_mask=kpm)
+        q = self.score_q(c_att)
+        k = self.score_k(n)
         logits = torch.matmul(k, q.transpose(-1, -2)).squeeze(-1) / math.sqrt(self.d_model)
         return logits
 
 
 class AttentionCritic(nn.Module):
-    """Same encoder, pool over nodes → MLP → V."""
+    """Same encoder, MASKED mean-pool over nodes → MLP → V.
+
+    The mean-pool respects the feasibility/real-slot mask so padded slots do
+    NOT dilute the pooled node representation."""
 
     def __init__(self, node_feat_dim: int, context_dim: int, d_model: int = 128,
                  n_heads: int = 4):
@@ -94,11 +118,26 @@ class AttentionCritic(nn.Module):
             nn.Linear(d_model, 1),
         )
 
-    def forward(self, nodes: torch.Tensor, ctx: torch.Tensor) -> torch.Tensor:
+    def forward(self, nodes: torch.Tensor, ctx: torch.Tensor,
+                feas_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         n = self.node_proj(nodes)
         c = self.ctx_proj(ctx).unsqueeze(1)
-        c_att, _ = self.attn(c, n, n)
-        # concat context query + mean-pool of nodes
-        pooled = n.mean(dim=1)
+        kpm = None
+        if feas_mask is not None:
+            kpm = _key_padding_mask_from_mask(feas_mask)
+            all_pad = kpm.all(dim=-1)
+            if all_pad.any():
+                kpm = kpm.clone()
+                kpm[all_pad] = False
+        c_att, _ = self.attn(c, n, n, key_padding_mask=kpm)
+
+        # Masked mean-pool over nodes
+        if feas_mask is not None:
+            m = feas_mask.unsqueeze(-1).float()  # (B, pT, 1)
+            summed = (n * m).sum(dim=1)
+            denom = m.sum(dim=1).clamp(min=1.0)
+            pooled = summed / denom
+        else:
+            pooled = n.mean(dim=1)
         h = torch.cat([c_att.squeeze(1), pooled], dim=-1)
         return self.head(h).squeeze(-1)

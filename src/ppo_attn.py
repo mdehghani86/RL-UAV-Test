@@ -44,6 +44,10 @@ class PPOAttnTrainer:
         self.actor = None; self.critic = None
         self.rollout_iter = []; self.rollout_mean_return = []
         self.eval_iters = []; self.eval_mean_returns = []
+        # Cached after first env reset inside train(); avoids building env_probe
+        # on every act() call during eval (can be thousands of calls per episode).
+        self._pN: Optional[int] = None
+        self._pM: Optional[int] = None
 
     def _tokens_ctx(self, obs: dict, env) -> (np.ndarray, np.ndarray):
         pN = env.config.padded_num_customers()
@@ -54,18 +58,21 @@ class PPOAttnTrainer:
 
     @torch.no_grad()
     def act(self, obs, info):
-        env_probe = self.env_fn()  # to get pad sizes; cheap
-        pN = env_probe.config.padded_num_customers()
-        pM = env_probe.config.padded_num_chargers()
-        nodes = build_node_tokens(obs, pN, pM)
+        # Cache pad sizes on first call; avoids rebuilding an env every inference.
+        if self._pN is None or self._pM is None:
+            env_probe = self.env_fn()
+            self._pN = env_probe.config.padded_num_customers()
+            self._pM = env_probe.config.padded_num_chargers()
+        nodes = build_node_tokens(obs, self._pN, self._pM)
         ctx = obs["agent"].astype(np.float32).ravel()
         mask_np = np.asarray(info.get("action_mask", obs.get("action_mask", [])), dtype=bool)
         n_t = torch.as_tensor(nodes, dtype=torch.float32, device=self.device).unsqueeze(0)
         c_t = torch.as_tensor(ctx, dtype=torch.float32, device=self.device).unsqueeze(0)
-        logits = self.actor(n_t, c_t).squeeze(0)
-        if mask_np.size > 0 and mask_np.any():
-            m_t = torch.as_tensor(mask_np, dtype=torch.bool, device=self.device)
-            logits = safe_mask_logits(logits, m_t)
+        m_t = torch.as_tensor(mask_np, dtype=torch.bool, device=self.device).unsqueeze(0) \
+              if mask_np.size > 0 else None
+        logits = self.actor(n_t, c_t, feas_mask=m_t).squeeze(0)
+        if m_t is not None and m_t.any():
+            logits = safe_mask_logits(logits, m_t.squeeze(0))
         return int(torch.argmax(logits).item())
 
     def train(self, eval_every_iters: int = 10, eval_episodes: int = 10):
@@ -76,6 +83,8 @@ class PPOAttnTrainer:
         obs, info = env.reset(seed=self.seed)
         pN = env.config.padded_num_customers()
         pM = env.config.padded_num_chargers()
+        # Cache for act() calls
+        self._pN, self._pM = pN, pM
         nodes0 = build_node_tokens(obs, pN, pM)
         ctx0 = obs["agent"]
         node_feat_dim = nodes0.shape[1]
@@ -110,14 +119,15 @@ class PPOAttnTrainer:
                 mask_np = np.asarray(info.get("action_mask", env.get_action_mask()), dtype=bool)
                 n_t = torch.as_tensor(nodes, dtype=torch.float32, device=self.device).unsqueeze(0)
                 c_t = torch.as_tensor(ctx, dtype=torch.float32, device=self.device).unsqueeze(0)
+                m_t_b = torch.as_tensor(mask_np, dtype=torch.bool, device=self.device).unsqueeze(0)
                 with torch.no_grad():
-                    logits = self.actor(n_t, c_t).squeeze(0)
-                    m_t = torch.as_tensor(mask_np, dtype=torch.bool, device=self.device)
+                    logits = self.actor(n_t, c_t, feas_mask=m_t_b).squeeze(0)
+                    m_t = m_t_b.squeeze(0)
                     logits_m = safe_mask_logits(logits, m_t)
                     dist_t = torch.distributions.Categorical(logits=logits_m)
                     a_t = dist_t.sample()
                     logp_t = dist_t.log_prob(a_t)
-                    v_t = self.critic(n_t, c_t).squeeze(0)
+                    v_t = self.critic(n_t, c_t, feas_mask=m_t_b).squeeze(0)
 
                 next_obs, r, terminated, truncated, next_info = env.step(int(a_t.item()))
                 done = bool(terminated or truncated)
@@ -153,9 +163,12 @@ class PPOAttnTrainer:
             with torch.no_grad():
                 nl = build_node_tokens(obs, pN, pM)
                 cl = obs["agent"]
+                last_mask = np.asarray(info.get("action_mask", env.get_action_mask()), dtype=bool)
+                m_last = torch.as_tensor(last_mask, dtype=torch.bool, device=self.device).unsqueeze(0)
                 v_last = float(self.critic(
                     torch.as_tensor(nl, dtype=torch.float32, device=self.device).unsqueeze(0),
                     torch.as_tensor(cl, dtype=torch.float32, device=self.device).unsqueeze(0),
+                    feas_mask=m_last,
                 ).item())
 
             adv, ret = compute_gae(R, V, TERM, TRUNC, v_last, self.gamma, self.lam)
@@ -174,7 +187,7 @@ class PPOAttnTrainer:
                     ret_mb = torch.as_tensor(ret[mb], dtype=torch.float32, device=self.device)
                     m_mb = torch.as_tensor(M[mb], dtype=torch.bool, device=self.device)
 
-                    logits = safe_mask_logits(self.actor(n_mb, c_mb), m_mb)
+                    logits = safe_mask_logits(self.actor(n_mb, c_mb, feas_mask=m_mb), m_mb)
                     d_t = torch.distributions.Categorical(logits=logits)
                     logp = d_t.log_prob(a_mb)
                     ent = d_t.entropy().mean()
@@ -183,7 +196,7 @@ class PPOAttnTrainer:
                         ratio * adv_mb,
                         torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv_mb
                     ).mean()
-                    vf_loss = F.mse_loss(self.critic(n_mb, c_mb), ret_mb)
+                    vf_loss = F.mse_loss(self.critic(n_mb, c_mb, feas_mask=m_mb), ret_mb)
                     loss = pi_loss + self.vf_coef * vf_loss - ent_coef * ent
 
                     opt.zero_grad()
